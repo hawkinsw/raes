@@ -37,6 +37,26 @@ mod constants {
 mod helpers {
     use crate::aes;
 
+    pub fn aes_arrange(input: [u8; 16]) -> [[u8; 4]; 4] {
+        let mut result = [[0u8; 4]; 4];
+        for i in 0..input.len() {
+            let col = i % 4;
+            let row = i / 4;
+            result[row][col] = input[i];
+        }
+        result
+    }
+
+    pub fn aes_dearrange(input: [[u8; 4]; 4]) -> [u8; 16] {
+        let mut result = [0u8; 16];
+        for i in 0..result.len() {
+            let row = i % 4;
+            let col = i / 4;
+            result[i] = input[row][col];
+        }
+        result
+    }
+
     pub fn rot_word(word: [u8; 4]) -> [u8; 4] {
         [word[1], word[2], word[3], word[0]]
     }
@@ -68,11 +88,9 @@ mod helpers {
             }
             result = result << 1;
         }
-        //println!("xtimes({:?}, {:x}): {:x}", count, b, result);
         result
     }
     pub fn field_multiply(left: u8, mut right: u8) -> u8 {
-        print!("galois({:x}, {:x}) = ", left, right);
         let mut result = 0;
         let mut count = 0usize;
         while right != 0 {
@@ -82,7 +100,6 @@ mod helpers {
             right >>= 1;
             count += 1;
         }
-        println!("{:x}", result);
         result
     }
 }
@@ -90,6 +107,13 @@ mod helpers {
 #[derive(Debug)]
 pub struct AESState {
     pub state: [[u8; 4]; 4],
+}
+
+impl From<u128> for AESState {
+    fn from(value: u128) -> Self {
+        let pt = helpers::aes_arrange(value.to_be_bytes());
+        AESState { state: pt }
+    }
 }
 
 impl AESState {
@@ -154,10 +178,32 @@ impl AESState {
 
 // Note: A word is 32 bits -> 4 bytes. Geez.
 
-mod key {
-    use crate::aes;
+#[derive(Debug)]
+struct Key<const ROUNDS: usize>
+where
+    [(); 4 * (ROUNDS + 1)]:, {
+    rounds: [[u8; 4]; 4 * (ROUNDS + 1)],
+}
 
-    pub fn expand<const ROUNDS: usize>(key: [u8; 16]) -> [[u8; 4]; 4 * (ROUNDS + 1)] {
+impl<const ROUNDS: usize> From<u128> for Key<ROUNDS>
+where
+    [(); 4 * (ROUNDS + 1)]:,
+{
+    fn from(value: u128) -> Self {
+        Key {
+            rounds: Key::<ROUNDS>::expand(value.to_be_bytes()),
+        }
+    }
+}
+impl<const ROUNDS: usize> Key<ROUNDS>
+where
+    [(); 4 * (ROUNDS + 1)]:,
+{
+
+    pub fn round(&self, round: usize) -> &[[u8; 4]] {
+        &self.rounds[round*4 .. round*4 + 4]
+    }
+    pub fn expand(key: [u8; 16]) -> [[u8; 4]; 4 * (ROUNDS + 1)] {
         let mut result = [[0u8; 4]; { 4 * (ROUNDS + 1) }];
         for i in 0..4 {
             let extracted_key = &key[4 * i..4 * i + 4];
@@ -167,53 +213,48 @@ mod key {
                 extracted_key[2],
                 extracted_key[3],
             ];
-            println!("result[{:x}]: {:x?}", i, extracted_key);
         }
         for i in 4..44 {
             let mut t = result[i - 1];
             if i % 4 == 0 {
-                t = aes::helpers::xor_4_byte(
-                    aes::helpers::sub_word(aes::helpers::rot_word(t)),
-                    aes::constants::RCON[i / 4 - 1],
+                t = helpers::xor_4_byte(
+                    helpers::sub_word(helpers::rot_word(t)),
+                    constants::RCON[i / 4 - 1],
                 );
             }
-            result[i] = aes::helpers::xor_4_byte(result[i - 4], t);
+            result[i] = helpers::xor_4_byte(result[i - 4], t);
         }
         result
     }
 }
 
-pub fn encrypt(key: u64, block: u64) -> u64 {
+pub fn encrypt(key: u128, block: u128) -> u128 {
+    let key: Key<10> = Into::into(key);
+    /*
     let key_array = [
         0x54, 0x68, 0x61, 0x74, 0x73, 0x20, 0x6D, 0x79, 0x20, 0x4B, 0x75, 0x6E, 0x67, 0x20, 0x46,
         0x75,
     ];
-    let expanded_key = key::expand::<10>(key_array);
-
+    */
+    /*/
     let pt = [
         [0x54, 0x4F, 0x4E, 0x20],
         [0x77, 0x6E, 0x69, 0x54],
         [0x6F, 0x65, 0x6E, 0x77],
         [0x20, 0x20, 0x65, 0x6F],
     ];
-    let mut state = AESState { state: pt };
-    println!("expanded key: {:x?}", expanded_key);
+    */
+    let mut state: AESState = Into::into(block);
 
-    state = state.add_round_key(&expanded_key[0..4]);
-    println!("state: {:x?}", state);
+    state = state.add_round_key(key.round(0));
     for i in 1..10 {
         state = state.sub_bytes();
-        println!("state: {:x?}", state);
         state = state.shift_rows();
-        println!("state: {:x?}", state);
         state = state.mix_columns();
-        println!("state: {:x?}", state);
-        state = state.add_round_key(&expanded_key[i * 4..i * 4 + 4]);
-        println!("state: {:x?}", state);
+        state = state.add_round_key(key.round(i));
     }
     state = state.sub_bytes();
     state = state.shift_rows();
-    state = state.add_round_key(&expanded_key[40..44]);
-    println!("final state: {:x?}", state);
-    0u64
+    state = state.add_round_key(key.round(10));
+    u128::from_be_bytes(helpers::aes_dearrange(state.state))
 }
